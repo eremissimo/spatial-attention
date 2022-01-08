@@ -75,7 +75,7 @@ module SpatialAttentionUnnormalized
     function SingleheadSpatialAttention(nd::Int, sz_wkey::PorT,
         sz_wval::PorT, n_wout::Int; radius=1, σ_k=identity, σ=identity)
         wargs = map((sz_wkey, sz_wval, last(sz_wval) => n_wout)) do chan
-            Flux.convfilter((1,1,1), chan)      # TODO обобщить!!!1
+            Flux.convfilter(ntuple(i->1, nd), chan)
         end
         return SingleheadSpatialAttention(wargs..., σ_k, σ, radius)
     end
@@ -113,17 +113,16 @@ module SpatialAttentionUnnormalized
     Flux.@functor SingleheadSpatialAttention (Wkey, Wval, Wout)
     Flux.@functor MultiheadSpatialAttention
 
-    """
-        MultiheadSpatialAttention(in_key => out_key, in_val => out_val, out_out, nheads=1;
-        radius=1, σ_k=id, σ=id)
+    function Base.show(io::IO, self::SingleheadSpatialAttention)
+        nd = ndims(self.Wkey)-2      # TODO: probably it would be better
+                                    # to parametrize the type with parameters' order
+        println(io, "SingleheadSpatialAttention{$(nd)D}[radius=$(self.radius),...]")
+    end
 
-    Multihead Local spatial attention module with unnormalized key similarity coefficients.
-    This is essentially a Parallel(+, single_attentions...)
-    """
-    function MultiheadSpatialAttention(key_sz, val_sz, out_sz, nheads=1; kwargs...)
-        return Flux.Parallel(+,
-            (SingleheadSpatialAttention(key_sz, val_sz, out_sz; kwargs...) for _ in 1:nheads)
-        )
+    function Base.show(io::IO, self::MultiheadSpatialAttention)
+        nd = ndims(self.layers[1].Wkey)-2    # TODO: yeah this too
+        n = length(self.layers)
+        println(io, "MultiheadSpatialAttention{$(nd)D}[nheads=$n, radius=$(self.layers[1].radius),...]")
     end
 
     ## Gradients
