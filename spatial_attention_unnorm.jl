@@ -37,7 +37,6 @@ module SpatialAttentionUnnormalized
         out = CUDA.zero(val)
         @cuda threads=sz1 blocks=sz2n spa_kernel!(out, key, val, radius,
                                     normalizer, Val(kchan), Val(vchan))
-        synchronize()
         return out
     end
 
@@ -137,7 +136,6 @@ module SpatialAttentionUnnormalized
         normalizer = one(T)/(kchan*(2*radius + 1)^2)
         @cuda threads=sz1 blocks=sz2n ∇key_kernel!(∇key, ∇out, key, val, radius,
                                             normalizer, Val(kchan), Val(vchan))
-        synchronize()
         return nothing
     end
 
@@ -172,7 +170,6 @@ module SpatialAttentionUnnormalized
         normalizer = one(T)/(kchan*(2*radius + 1)^2)
         @cuda threads=sz1 blocks=sz2n ∇val_kernel!(∇val, ∇out, key, val, radius,
                                             normalizer, Val(kchan), Val(vchan))
-        synchronize()
         return nothing
     end
 

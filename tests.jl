@@ -59,7 +59,7 @@ function timing_grads_singlehead(key, val, radius=2)
     channel_dim = nd - 1;
     kch = size(key, channel_dim)
     vch = size(val, channel_dim)
-    sa = SpatialAttentionUnnormalized.SingleheadSpatialAttention(nd, kch=>4,
+    sa = SpatialAttentionUnnormalized.SingleheadSpatialAttention(nd-2, kch=>4,
                                         vch=>7, 3; radius=radius, σ_k=sigmoid)
     if isa(key, CuArray)
         sa = gpu(sa)
@@ -76,15 +76,15 @@ function timing_grads_multihead(key, val, radius=2)
     channel_dim = nd - 1;
     kch = size(key, channel_dim)
     vch = size(val, channel_dim)
-    sa = SpatialAttentionUnnormalized.MultiheadSpatialAttention(+, nheads, nd,
+    sa = SpatialAttentionUnnormalized.MultiheadSpatialAttention(+, nheads, nd-2,
                                 kch=>4, vch=>7, 3; radius=radius, σ_k=sigmoid)
     if isa(key, CuArray)
         sa = gpu(sa)
     end
-    grads = gradient(params(sa)) do
+    out, grads = withgradient(params(sa)) do
         sum(sa(key, val))
     end
-    return grads
+    return out, grads
 end
 
 function test_cpu_eq_gpu(n, radius)
