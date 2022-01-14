@@ -5,7 +5,7 @@ using Flux.Optimise: update!, ADAM
 using ParameterSchedulers: Exp
 using Printf: @sprintf
 using ProgressBars: ProgressBar, set_description
-include(".\\spatial_attention_unnorm.jl")
+include(".\\spatial_attention_dumb.jl")
 using .SpatialAttentionUnnormalized
 
 

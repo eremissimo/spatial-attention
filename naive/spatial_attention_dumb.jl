@@ -2,7 +2,7 @@ module SpatialAttentionUnnormalized
 
     using CUDA
     import ChainRulesCore, Flux
-    include(".\\kernels_unnorm.jl")
+    include(".\\kernels_dumb.jl")
 
     export SingleheadSpatialAttention, MultiheadSpatialAttention
 

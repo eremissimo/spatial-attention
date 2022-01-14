@@ -5,7 +5,7 @@ using Flux: sigmoid, gpu, cpu, gradient, params, fmap
 using Zygote: withgradient
 using Base.Threads: @spawn, @sync
 using Test: @testset, @test
-include(".\\spatial_attention_unnorm.jl")
+include(".\\spatial_attention_dumb.jl")
 
 
 function mdims(chan, batch, ndim)
