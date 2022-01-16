@@ -55,19 +55,22 @@ module SpatialAttention
         wargs = map((sz_wkey, sz_wval, last(sz_wval) => n_wout)) do chan
             Flux.convfilter(ntuple(i->1, length(spatial_sizes)), chan)
         end
+        wtype = eltype(wargs[1])
+        wnd = length(spatial_sizes)
         radius = WindowFunctions.get_radius(window)
         # nextprod is for faster fft
         padded_sizes = map(d->nextprod([2,3,5], d), spatial_sizes .+ radius)
-        kernel_padded = _pad(WindowFunctions.construct_kernel(window), padded_sizes)
+        kernel_padded = _pad(WindowFunctions.construct_kernel(window, wnd, wtype),
+                            padded_sizes)
         window_spectrum = FFTW.rfft(kernel_padded)
         # constructing fft plan for v*k' for a fast convolution with the window.
         # It is possible to just use NNlib.conv for the purpose of convolving
         # with the predefined kernel and not mess around with paddings and ffts
         # but I think that would be slower for large window radii.
         # I'll check that later (<- TODO)
-        tmp_vkT = randn(eltype(kernel_padded), padded_sizes..., last(sz_wval),
+        tmp_vkT = randn(wtype, padded_sizes..., last(sz_wval),
                     last(sz_wkey), batch_size)
-        rfft_plan = FFTW.plan_rfft(tmp_vkT, 1:length(padded_sizes))
+        rfft_plan = FFTW.plan_rfft(tmp_vkT, 1:wnd)
         return Singlehead(wargs..., σ_k, σ, spatial_sizes, padded_sizes, radius,
                 window_spectrum, rfft_plan)
     end

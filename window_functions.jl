@@ -2,11 +2,11 @@ module WindowFunctions
 
     export AbstractWindow, MeanWindow, SumWindow, GaussianWindow, get_radius, construct_kernel
 
-    abstract type AbstractWindow{T, N} end
+    abstract type AbstractWindow end
 
-    struct MeanWindow{T, N} <: AbstractWindow{T, N}
+    struct MeanWindow <: AbstractWindow
         radius
-        val::T
+        val
     end
 
     """
@@ -14,51 +14,51 @@ module WindowFunctions
 
     Constructs a sum filter (sum of values at each pixel when convolved).
     """
-    struct SumWindow{T, N} <: AbstractWindow{T, N}
+    struct SumWindow <: AbstractWindow
         radius
     end
 
-    struct GaussianWindow{T, N} <: AbstractWindow{T, N}
+    struct GaussianWindow <: AbstractWindow
         radius
-        sigma::T
+        sigma
     end
 
     """
-        MeanWindow{T, N}(radius [, val=1/(2*radius+1)^2])
+        MeanWindow(radius [, val=1/(2*radius+1)^2])
 
     Constructs a mean filter (i.e. convolution with it computes the mean value of
     a neighborhood at each pixel).
     """
-    function MeanWindow{T, N}(radius) where {T, N}
-        val=convert(T, 1/(2*radius+1)^2)
-        return MeanWindow{T, N}(radius, val)
+    function MeanWindow(radius)
+        val=1/(2*radius+1)^2
+        return MeanWindow(radius, val)
     end
 
     """
-        GaussianWindow{T, N}(radius [, sigma=radius/1.5])
+        GaussianWindow(radius [, sigma=radius/1.5])
 
     Constructs a gaussian blur filter.
     """
-    function GaussianWindow{T, N}(radius) where {T, N}
-        sigma = convert(T, radius/1.5)                  # ¯\_(ツ)_/¯
-        return GaussianWindow{T, N}(radius, sigma)
+    function GaussianWindow(radius) where {T, N}
+        sigma = radius/1.5                 # ¯\_(ツ)_/¯
+        return GaussianWindow(radius, sigma)
     end
 
     get_radius(self::AbstractWindow) = self.radius
 
-    function construct_kernel(self::MeanWindow{T, N}) where {T, N}
-        return fill(self.val, ntuple(i->(2*self.radius+1), N))
+    function construct_kernel(self::MeanWindow, nd, type)
+        return fill(convert(type, self.val), ntuple(i->(2*self.radius+1), nd))
     end
 
-    function construct_kernel(self::SumWindow{T, N}) where {T, N}
-        return ones(T, ntuple(i->(2*self.radius+1), N))
+    function construct_kernel(self::SumWindow, nd, type)
+        return ones(type, ntuple(i->(2*self.radius+1), nd))
     end
 
-    function construct_kernel(self::GaussianWindow{T, N}) where {T, N}
-        shape = ntuple(i->(2*self.radius+1), N)
+    function construct_kernel(self::GaussianWindow, nd, type)
+        shape = ntuple(i->(2*self.radius+1), nd)
         s2 = self.sigma^2
-        output = Array{T, N}(undef, shape...)
-        center = CartesianIndex(ntuple(i -> self.radius + 1, N))
+        output = Array{type, nd}(undef, shape...)
+        center = CartesianIndex(ntuple(i -> self.radius + 1, nd))
         for idx in CartesianIndices(output)
             output[idx] = exp(-0.5*sum(Tuple(idx - center).^2)/s2)
         end
