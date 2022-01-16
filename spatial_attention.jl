@@ -1,9 +1,9 @@
 module SpatialAttention
-    import Flux
+    import Flux, FFTW, ChainRulesCore
     using CUDA
-    #using CUDA.CUFFT: rfft, plan_rfft
-    import FFTW
-    import Main.WindowFunctions
+    include("window_functions.jl")
+    using .WindowFunctions: AbstractWindow, MeanWindow, SumWindow, GaussianWindow
+    export AbstractWindow, MeanWindow, SumWindow, GaussianWindow
 
     export Singlehead, Multihead
 
@@ -45,6 +45,9 @@ module SpatialAttention
         rfft_plan
     end
 
+
+    # ======== SINGLEHEAD ========= #
+
     function Singlehead(spatial_sizes, batch_size, sz_wkey,
         sz_wval, n_wout, window; σ_k=identity, σ=identity)
         # unfortunately we need to know beforehand spatial and batch sizes
@@ -55,10 +58,9 @@ module SpatialAttention
         radius = WindowFunctions.get_radius(window)
         # nextprod is for faster fft
         padded_sizes = map(d->nextprod([2,3,5], d), spatial_sizes .+ radius)
-        kernel_padded = _pad_to_size(WindowFunctions.construct_kernel(window),
-                        padded_sizes)
+        kernel_padded = _pad(WindowFunctions.construct_kernel(window), padded_sizes)
         window_spectrum = FFTW.rfft(kernel_padded)
-        # constructing fft plan for v*k' for fast convolution with window.
+        # constructing fft plan for v*k' for a fast convolution with the window.
         # It is possible to just use NNlib.conv for the purpose of convolving
         # with the predefined kernel and not mess around with paddings and ffts
         # but I think that would be slower for large window radii.
@@ -70,9 +72,33 @@ module SpatialAttention
                 window_spectrum, rfft_plan)
     end
 
-    Flux.@functor Singlehead (Wkey, Wval, Wout)
+    Flux.@functor Singlehead (Wkey, Wval, Wout, window_spectrum, rfft_plan)
 
-    # forward
+    Flux.trainable(self::Singlehead) = (self.Wkey, self.Wval, self.Wout)
+
+    # 'move' cpu fft plan to gpu (reconstructing it from scratch actually)
+    function Flux.adapt(::Flux.FluxCUDAAdaptor, pl::FFTW.rFFTWPlan{T}) where T
+        tmp_array = CUDA.zeros(T, pl.sz...)
+        gpu_pl = CUDA.CUFFT.plan_rfft(tmp_array, pl.region)
+        return gpu_pl
+    end
+
+    # 'move' gpu fft plan to cpu (reconstructing it from scratch actually)
+    function Flux.adapt(::Flux.FluxCPUAdaptor, pl:: CUDA.CUFFT.rCuFFTPlan{T}) where T
+        tmp_array = zeros(T, pl.sz...)
+        cpu_pl = FFTW.plan_rfft(tmp_array, pl.region)
+        return cpu_pl
+    end
+
+    # Overriding Flux.gpu to make gpu() call compatible with fft plans.
+    # BTW Flux.cpu fmaps everything, not only bits arrays, that's why there's no
+    # need to implement the cpu counterpart.
+    function Flux.gpu(x::Singlehead)
+        Flux.check_use_cuda()
+        Flux.use_cuda[] ? Flux.fmap(m -> Flux.adapt(Flux.FluxCUDAAdaptor(), m), x) : x
+    end
+
+    # forward function
     function (self::Singlehead)(key, val)
         k1 = self.σ_k.(Flux.conv(key, self.Wkey))
         v1 = Flux.conv(val, self.Wval)
@@ -81,44 +107,30 @@ module SpatialAttention
         out = self.σ.(Flux.conv(o1, self.Wout))
     end
 
+    # pretty-print function
     function Base.show(io::IO, self::Singlehead{T, N}) where {T, N}
         println(io, "SpatialAttention.Singlehead{$T, $(N-2)D}[
                     radius=$(self.radius),
                     spatial_sizes=$(self.spatial_sizes)...]")
     end
 
+    # the main computations of spatial attention layers
     function spa(k::AbstractArray{T, N}, v::AbstractArray{T,N},
         window_spectrum, rfft_plan, spatial_dims, padded_dims, radius) where {T, N}
         c1, c2, b = size(k, N-1), size(v, N-1), size(v, N)
         k = Flux.unsqueeze(k, N-1)
         v = Flux.unsqueeze(v, N) .* k  # v*k' of size (spatial_dims..., c2, c1, b)
-        v = _pad_to_size(v, padded_dims)
+        v = _pad(v, padded_dims)
             # conv with precomputed window_spectrum = rfft(window)
         v = rfft_plan \ ((rfft_plan * v) .* window_spectrum)
-        v = _unpad_to_size(v, radius, spatial_dims)
+        v = _unpad(v, radius, spatial_dims)
         out = dropdims(sum(v .* k; dims=N); dims=N)
     end
-#=
-    # fft-conv specific padding for cpu Arrays
-    function _pad_to_size(arr::Array, ns)
-        ns = _subst_to(ns, size(arr))
-        out = zeros(eltype(arr), ns)
-        cartidxs = CartesianIndices(arr)
-        @inbounds out[cartidxs] .= arr
-        return out
-    end
 
-    # fft-conv specific padding for gpu Arrays
-    function _pad_to_size(arr::CuArray, ns)
-        ns = _subst_to(ns, size(arr))
-        out = CUDA.zeros(eltype(arr), ns)
-        cartidxs = CartesianIndices(arr)
-        @inbounds out[cartidxs] .= arr
-        return out
-    end
-=#
+    # ======= HELPERS ======= #
+
     # fft-conv specific padding for cpu Arrays
-    function _pad_to_size(arr::Array, ns)
+    function _pad(arr::Array, ns)
         spdim = length(ns)
         ns = _diff_to(ns, size(arr))
         out = cat(arr, zeros(eltype(arr), ns...); dims = 1:spdim)
@@ -126,15 +138,30 @@ module SpatialAttention
     end
 
     # fft-conv specific padding for gpu Arrays
-    function _pad_to_size(arr::CuArray, ns)
+    function _pad(arr::CuArray, ns)
         spdim = length(ns)
         ns = _diff_to(ns, size(arr))
         out = cat(arr, CUDA.zeros(eltype(arr), ns...); dims = 1:spdim)
         return out
     end
 
+    # Zygote couldn't differentiate through _pad because of missing CUDA.zeros adjoint
+    # I could add the missing adjoint... but nah, lets implement the whole
+    # differentiation rule instead :P
+    function ChainRulesCore.rrule(::typeof(_pad), arr, ns)
+        orig_shape = size(arr)
+        out = _pad(arr, ns)
+        function pad_pullback(∇out)
+            return(ChainRulesCore.NoTangent(),
+                ChainRulesCore.@thunk(@inbounds view(ChainRulesCore.unthunk(∇out),
+                                                Base.OneTo.(orig_shape)...)),
+                ChainRulesCore.NoTangent())
+        end
+        return out, pad_pullback
+    end
+
     # fft-conv specific unpadding
-    function _unpad_to_size(arr, r, ns)
+    function _unpad(arr, r, ns)
         nspatials = length(ns)
         ns = _subst_to(ns, size(arr))
         offset = ntuple(i -> (i <= nspatials ? r : zero(r)), length(ns))

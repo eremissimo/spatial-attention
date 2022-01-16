@@ -1,17 +1,34 @@
-include("window_functions.jl")
+import ChainRulesTestUtils
 include("spatial_attention.jl")
-using .WindowFunctions
-using Zygote: withgradient
-using Flux: params
+using CUDA
+using .SpatialAttention: MeanWindow
+using Flux: params, withgradient
 
-function test1_cpu()
-    key = randn(Float32, 10, 20, 15, 3, 5)
-    val = randn(Float32, 10, 20, 15, 6, 5)
-    spatials, c1, c2, b = size(key)[1:3], size(key, 4), size(val, 4), size(val, 5)
-    window = MeanWindow{Float32, 3}(2)
-    model = SpatialAttention.Singlehead(spatials, b, 3=>6, 6=>7, 4, window)
+
+function timing_cpu(key::Array, val::Array, radius)
+    nd = ndims(key)
+    spatials, c1, c2, b = size(key)[1:nd-2], size(key, nd-1), size(val, nd-1), size(val, nd);
+    window = MeanWindow{eltype(key), nd-2}(radius);
+    model = SpatialAttention.Singlehead(spatials, b, c1=>6, c2=>7, 4, window)
     out, grads = withgradient(params(model)) do
         sum(model(key, val))
     end
     return out, grads
+end
+
+function timing_gpu(key::CuArray, val::CuArray, radius)
+    nd = ndims(key)
+    spatials, c1, c2, b = size(key)[1:nd-2], size(key, nd-1), size(val, nd-1), size(val, nd);
+    window = MeanWindow{eltype(key), nd-2}(radius);
+    model = SpatialAttention.Singlehead(spatials, b, c1=>6, c2=>7, 4, window) |> gpu
+    out, grads = withgradient(params(model)) do
+        sum(model(key, val))
+    end
+    return out, grads
+end
+
+function test_pad_rrule()
+    arr = randn(Float64, 3,4,5,6)
+    nd = (6,8)
+    ChainRulesTestUtils.test_rrule(SpatialAttention._pad, arr, nd)
 end
