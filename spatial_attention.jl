@@ -7,8 +7,9 @@ module SpatialAttention
     export AbstractWindow, MeanWindow, SumWindow, GaussianWindow
     export Singlehead, Multihead
 
+    abstract type AbstractSA{T, N} end
 
-    struct Singlehead{T, N}
+    struct Singlehead{T, N} <: AbstractSA{T, N}
             # trainable weights
         Wkey::AbstractArray{T, N}
         Wval::AbstractArray{T, N}
@@ -27,7 +28,7 @@ module SpatialAttention
 
     # precomputed fft parameters (i.e. window_spectrum and rfft_plan)
     # are shared by all heads
-    struct Multihead{T, N, M}
+    struct Multihead{T, N, M} <: AbstractSA{T, N}
         Wkey::NTuple{M, AbstractArray{T, N}}
         Wval::NTuple{M, AbstractArray{T, N}}
         Wout::NTuple{M, AbstractArray{T, N}}
@@ -43,6 +44,26 @@ module SpatialAttention
 
     # ======== SINGLEHEAD ========= #
 
+    """
+        Singlehead(spatial_sizes, batch_size, k_in=>k_out, v_in=>v_out, o_out, window::AbstractWindow; σ_k=identity, σ=identity)
+
+    A local spatial self attention layer. It is local in the sence that for each
+    pixel it acts on a local pixel neighborhood defined by the `window`.
+    # Args:
+    - `spatial_sizes`: a tuple of spatial sizes of input
+    - `k_in => k_out`: linear transform of key channels
+    - `v_in => v_out`: linear transform of value channels
+    - `o_out`: output channels
+    - `window`:  a window function instance of a pixel neighborhood `radius`. Possible options are
+        * MeanWindow(radius [,meanvalue])
+        * SumWindow(radius)
+        * GaussianWindow(radius, sigma)
+    # Kwargs:
+    - `σ_k`: key activation function (e.g. for key product normalization)
+    - `σ`: output activation function
+
+    See also [`Multihead`](@ref).
+    """
     function Singlehead(spatial_sizes, batch_size, sz_wkey,
         sz_wval, n_wout, window; σ_k=identity, σ=identity)
         # unfortunately we need to know spatial and batch sizes beforehand
@@ -59,7 +80,7 @@ module SpatialAttention
 
     Flux.@functor Singlehead (Wkey, Wval, Wout, window_spectrum, rfft_plan)
 
-    Flux.trainable(self::Singlehead) = (self.Wkey, self.Wval, self.Wout)
+    Flux.trainable(self::AbstractSA) = (self.Wkey, self.Wval, self.Wout)
 
     # 'move' cpu fft plan to gpu (reconstructing it from scratch actually)
     function Flux.adapt(::Flux.FluxCUDAAdaptor, pl::FFTW.rFFTWPlan{T}) where T
@@ -77,8 +98,8 @@ module SpatialAttention
 
     # Overriding Flux.gpu to make gpu() call compatible with fft plans.
     # BTW Flux.cpu fmaps everything, not only bits arrays, that's why there's no
-    # need to implement the cpu counterpart.
-    function Flux.gpu(x::Union{Singlehead, Multihead})
+    # need to override the cpu counterpart.
+    function Flux.gpu(x::AbstractSA)
         Flux.check_use_cuda()
         Flux.use_cuda[] ? Flux.fmap(m -> Flux.adapt(Flux.FluxCUDAAdaptor(), m), x) : x
     end
@@ -114,6 +135,28 @@ module SpatialAttention
 
     # ======= MULTIHEAD ======= #
 
+    """
+        Multihead(nheads, spatial_sizes, batch_size, k_in=>k_out, v_in=>v_out, o_out, window::AbstractWindow; σ_k=identity, σ=identity)
+
+    A local spatial multihead self attention layer. It is local in the sence that for each
+    pixel it acts on a local pixel neighborhood defined by the `window`. The layer
+    sums outputs of `nheads` single head attention layers.
+    # Args:
+    - `nheads`: number of heads
+    - `spatial_sizes`: tuple of spatial sizes of input
+    - `k_in => k_out`: linear transform of key channels
+    - `v_in => v_out`: linear transform of value channels
+    - `o_out`: output channels
+    - `window`: a window function instance of a pixel neighborhood `radius`. Possible options are
+        * MeanWindow(radius [,meanvalue])
+        * SumWindow(radius)
+        * GaussianWindow(radius, sigma)
+    # Kwargs:
+    - `σ_k`: key activation function (e.g. for key product normalization)
+    - `σ`: output activation function
+
+    See also [`Singlehead`](@ref).
+    """
     function Multihead(nheads, spatial_sizes, batch_size, sz_wkey,
         sz_wval, n_wout, window; σ_k=identity, σ=identity)
         kershape = ntuple(i->1, length(spatial_sizes))
@@ -129,9 +172,7 @@ module SpatialAttention
 
     Flux.@functor Multihead (Wkey, Wval, Wout, window_spectrum, rfft_plan)
 
-    Flux.trainable(self::Multihead) = (self.Wkey, self.Wval, self.Wout)
-
-    # forward function (mapreduce variant)
+    # forward function
     function (self::Multihead)(key, val)
         return mapreduce(+, zip(self.Wkey, self.Wval, self.Wout)) do (Wk, Wv, Wo)
             k1 = self.σ_k.(Flux.conv(key, Wk))
@@ -186,8 +227,8 @@ module SpatialAttention
         return out
     end
 
-    # Zygote couldn't differentiate through _pad because of missing CUDA.zeros adjoint
-    # I could add the missing adjoint... but nah, lets implement the whole
+    # Zygote can't differentiate through _pad because of missing CUDA.zeros adjoint
+    # I could've added the missing adjoint... but nah, lets implement the whole
     # differentiation rule instead :P
     function ChainRulesCore.rrule(::typeof(_pad), arr, ns)
         orig_shape = size(arr)
@@ -208,8 +249,7 @@ module SpatialAttention
         offset = ntuple(i -> (i <= nspatials ? r : zero(r)), length(ns))
         idx0 = CartesianIndex(offset)
         idxs = CartesianIndices(map(Base.OneTo, ns)) .+ idx0
-        # returns a contiguous copy of subarray, not a view!
-        return @inbounds arr[idxs]
+        return @inbounds view(arr, idxs)
     end
 
     @generated function _subst_to(v1::NTuple{N, T}, v2::NTuple{M, T}) where {N, T, M}
